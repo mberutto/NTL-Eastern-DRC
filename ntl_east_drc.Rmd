@@ -9,8 +9,46 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## VIIRS NTL Data
+
+Data were retrieved from the [EOG database](https://eogdata.mines.edu/products/vnl/). Data were initially collected by Suomi NPP satellite.
+
+vcmcfg = VIIRS Cloud Masked, Stray Light Corrected, with filtering of ephemeral lights (fires, auroras, etc)
+
+Files ending in `.cvg.tif` represent the coverage, the total number of days that contributed to each pixel.
+
+Files endings in `.cf_cvg.tif` represent the total number of cloud-free days in the coverage. As such, `.cvg.tif` \>= `.cf_cvg.tif`.
+
+Files ending in `.avg_rade9h_tif` re-resent the average radiance (nanoWatts/$\,\text{cm}^2$/sr)
+
+## Loading necessary packages
 
 ```{r}
+# Uncomment lines to download necessary packages
+# install.packages("terra")
+# install.packages("stringr")
+# install.packages("tidyverse")
+# install.packages("dplyr")
+
+# Loading necessary packages
+library(terra)
+library(stringr)
+library(tidyverse)
+terraOptions(todisk = TRUE)
+```
+
+## Setting up
+
+```{r}
+# Open each file (change directory if needed)
+avg_rade9h_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20250131_00N060W_vcmslcfg_v10_c202502181200.avg_rade9h.tif")
+cvg_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20250131_00N060W_vcmslcfg_v10_c202502181200.cvg.tif")
+cf_cvg_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20250131_00N060W_vcmslcfg_v10_c202502181200.cf_cvg.tif")
+
+avg_rade9h_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.avg_rade9h.tif")
+cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cvg.tif")
+cf_cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cf_cvg.tif")
+
+
 
 ```
