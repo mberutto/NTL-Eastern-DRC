@@ -48,29 +48,99 @@ cf_cvg_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NT
 avg_rade9h_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.avg_rade9h.tif")
 cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cvg.tif")
 cf_cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cf_cvg.tif")
+
+# Loading provinces shp file
+gadm_cod1 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_1.shp")
+
+# Loading village/territory shp file
+gadm_cod2 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_2.shp")
 ```
 
-## Adjusting for cloud-free pixels 
+## South Kivu
 
 ```{r}
-# Setting minimum cloud-free nights to 10
-min_cf <- 10
+# Selecting South Kivu 
+south_kivu <- gadm_cod1[gadm_cod1$NAME_1 %in% c("Sud-Kivu", "South Kivu"), ]
 
-# Creating object wih only pixels with at least ten cloudless nights (other pixels left as NA)
-avg_masked_00 <- ifel(cf_cvg_00N060W >= min_cf, avg_rade9h_00N060W, NA)
-avg_masked_75 <- ifel(cf_cvg_75N060W >= min_cf, avg_rade9h_75N060W, NA)
+# Align CRS
+# Ensure shapefile matches VIIRS raster coordinate system (WGS84)
+south_kivu_r <- project(south_kivu, crs(avg_rade9h_00N060W))
+
+# Crop and mask rasters to South Kivu
+# Crop = fast bounding box cut; mask = keep only pixels inside border
+avg_sk <- mask(crop(avg_rade9h_00N060W, south_kivu_r), south_kivu_r)
+cf_sk  <- mask(crop(cf_cvg_00N060W,     south_kivu_r), south_kivu_r)
+
+# Apply cloud-free threshold
+min_cf <- 5
+avg_sk_masked <- ifel(cf_sk >= min_cf, avg_sk, NA_real_)
+
+# Compute share of valid (non-NA) pixels
+# Restrict calculation strictly to inside the province polygon
+in_province   <- mask(cf_sk, south_kivu_r)
+total_inside  <- global(!is.na(in_province), "sum", na.rm = TRUE)[1,1]
+valid_inside  <- global(!is.na(avg_sk_masked), "sum", na.rm = TRUE)[1,1]
+pct_valid_inside <- 100 * valid_inside / total_inside
+
+cat(sprintf("South Kivu (inside borders only): %.2f%% valid pixels\n",
+            pct_valid_inside))
+
+# Diagnostics: NA mask map
+plot(is.na(avg_sk_masked),
+     main = "South Kivu – NA pixels (white = missing, black = valid)")
+
+# Visualization: radiance map
+plot(avg_sk_masked,
+     col   = hcl.colors(100, "Inferno", rev = TRUE),
+     NAcol = "transparent",
+     main  = paste0("South Kivu – Night-time Light Radiance (min_cf ≥ ",
+                    min_cf, ")"))
+plot(south_kivu_r, add = TRUE, border = "white", lwd = 1.2)
 ```
 
-## Merging tiles
+## Goma
 
 ```{r}
-# Quick sanity check (VIIRS tiles usually already match)
-stopifnot(crs(avg_masked_00) == crs(avg_masked_75))
-stopifnot(all(res(avg_masked_00) == res(avg_masked_75)))
 
-# Merge neighbors; average values in any overlap
-ntl_mosaic <- mosaic(avg_masked_00, avg_masked_75, fun = "mean", na.rm = TRUE)
+# Subset the Goma territory / city
+# Check naming with: unique(gadm_cod2$NAME_2)
+goma <- gadm_cod2[gadm_cod2$NAME_2 %in% c("Goma", "Ville de Goma"), ]
 
-plot(ntl_mosaic, main = "Masked VIIRS mosaic")
+# Align CRS with VIIRS raster (ensures same coordinate system)
+goma_r <- project(goma, crs(avg_rade9h_00N060W))
 
+# Crop and mask radiance + coverage to Goma
+# Crop = cut by bounding box (faster)
+# Mask = keep only pixels inside the territory boundary
+avg_goma <- mask(crop(avg_rade9h_00N060W, goma_r), goma_r)
+cf_goma  <- mask(crop(cf_cvg_00N060W,     goma_r), goma_r)
+
+# Apply cloud-free threshold
+min_cf <- 5
+avg_goma_masked <- ifel(cf_goma >= min_cf, avg_goma, NA_real_)
+
+# Compute % of valid (non-NA) pixels inside Goma polygon
+in_goma      <- mask(cf_goma, goma_r)
+total_inside <- global(!is.na(in_goma), "sum", na.rm = TRUE)[1,1]
+valid_inside <- global(!is.na(avg_goma_masked), "sum", na.rm = TRUE)[1,1]
+pct_valid_inside <- 100 * valid_inside / total_inside
+
+cat(sprintf("Goma (inside borders only): %.2f%% valid pixels\n", pct_valid_inside))
+
+# Diagnostic: NA-pixel map
+plot(is.na(avg_goma_masked),
+     main = "Goma – NA pixels (white = missing, black = valid)")
+
+# Visualization: Radiance map
+plot(avg_goma_masked,
+     col   = hcl.colors(100, "Inferno", rev = TRUE),
+     NAcol = "transparent",
+     main  = paste0("Goma – Night-time Light Radiance (min_cf ≥ ", min_cf, ")"))
+plot(goma_r, add = TRUE, border = "white", lwd = 1.5)
+
+# Optional: export processed raster
+writeRaster(avg_goma_masked,
+            paste0("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/processed/",
+                   "avg_goma_masked_cf", min_cf, ".tif"),
+            overwrite = TRUE, gdal = c("COMPRESS=LZW"))
 ```
