@@ -48,7 +48,29 @@ cf_cvg_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NT
 avg_rade9h_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.avg_rade9h.tif")
 cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cvg.tif")
 cf_cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cf_cvg.tif")
+```
 
+## Adjusting for cloud-free pixels 
 
+```{r}
+# Setting minimum cloud-free nights to 10
+min_cf <- 10
+
+# Creating object wih only pixels with at least ten cloudless nights (other pixels left as NA)
+avg_masked_00 <- ifel(cf_cvg_00N060W >= min_cf, avg_rade9h_00N060W, NA)
+avg_masked_75 <- ifel(cf_cvg_75N060W >= min_cf, avg_rade9h_75N060W, NA)
+```
+
+## Merging tiles
+
+```{r}
+# Quick sanity check (VIIRS tiles usually already match)
+stopifnot(crs(avg_masked_00) == crs(avg_masked_75))
+stopifnot(all(res(avg_masked_00) == res(avg_masked_75)))
+
+# Merge neighbors; average values in any overlap
+ntl_mosaic <- mosaic(avg_masked_00, avg_masked_75, fun = "mean", na.rm = TRUE)
+
+plot(ntl_mosaic, main = "Masked VIIRS mosaic")
 
 ```
