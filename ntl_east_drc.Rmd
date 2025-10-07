@@ -27,120 +27,280 @@ Files ending in `.avg_rade9h_tif` re-resent the average radiance (nanoWatts/$\,\
 # Uncomment lines to download necessary packages
 # install.packages("terra")
 # install.packages("stringr")
+# install.packages("ggplot2")
 # install.packages("tidyverse")
-# install.packages("dplyr")
+# install.packages("geodata")
+# install.packages("sf")
 
 # Loading necessary packages
 library(terra)
 library(stringr)
+library(ggplot2)
 library(tidyverse)
+library(geodata)
+library(sf)
 terraOptions(todisk = TRUE)
 ```
 
-## Setting up
+## Reading files and setting them to objects
 
 ```{r}
-# Open each file (change directory if needed)
-avg_rade9h_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20250131_00N060W_vcmslcfg_v10_c202502181200.avg_rade9h.tif")
-cvg_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20250131_00N060W_vcmslcfg_v10_c202502181200.cvg.tif")
-cf_cvg_00N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20250131_00N060W_vcmslcfg_v10_c202502181200.cf_cvg.tif")
 
-avg_rade9h_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.avg_rade9h.tif")
-cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cvg.tif")
-cf_cvg_75N060W <- rast("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/SVDNB_npp_20250101-20251231_75N060W_vcmcfg_v10_c202502181200.cf_cvg.tif")
+# Base directory (change if necessary)
+base_dir <- "C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/data"
 
-# Loading provinces shp file
-gadm_cod1 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_1.shp")
+# List of month folders (make sure this matches the folder names found in your directory)
+months_list <- c(
+  "jan2024","feb2024","mar2024","apr2024","may2024","jun2024",
+  "jul2024","aug2024","sep2024","oct2024","nov2024","dec2024",
+  "jan2025","feb2025","mar2025","apr2025","may2025","jun2025",
+  "jul2025","aug2025"
+)
 
-# Loading village/territory shp file
-gadm_cod2 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_2.shp")
+# Loop through folders and load rasters
+for (m in months_list) {
+  
+  # Define folder path
+  month_dir <- file.path(base_dir, m)
+  
+  # List all tif files in this folder
+  tif_files <- list.files(month_dir, pattern = "\\.tif$", full.names = TRUE)
+  
+  # Identify each file type by its suffix
+  avg_file <- tif_files[grepl("avg_rade9h", tif_files)]
+  cf_file  <- tif_files[grepl("cf_cvg", tif_files)]
+  cvg_file <- tif_files[grepl("(?<!cf_)cvg\\.tif$", tif_files, perl = TRUE)]
+  
+  # Read each raster
+  avg_r <- rast(avg_file)
+  cf_r  <- rast(cf_file)
+  cvg_r <- rast(cvg_file)
+  
+  # Dynamically assign names like avg_rade9h_00N060W_jan2024
+  assign(paste0("avg_rade9h_00N060W_", m), avg_r)
+  assign(paste0("cf_cvg_00N060W_", m), cf_r)
+  assign(paste0("cvg_00N060W_", m), cvg_r)
+}
 ```
 
-## South Kivu
+## Calculating valid pixels
 
 ```{r}
-# Selecting South Kivu 
+# Setting different thesholds for number of valid nights
+thresholds <- c(1, 3, 5)  
+
+
+# Load province, select South Kivu
+gadm_cod1 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_1.shp")
 south_kivu <- gadm_cod1[gadm_cod1$NAME_1 %in% c("Sud-Kivu", "South Kivu"), ]
 
-# Align CRS
-# Ensure shapefile matches VIIRS raster coordinate system (WGS84)
-south_kivu_r <- project(south_kivu, crs(avg_rade9h_00N060W))
+# Helper to read the 3 rasters for a month
+read_month_rasters <- function(month_dir) {
+  tif_files <- list.files(month_dir, pattern = "\\.tif$", full.names = TRUE)
+  if (length(tif_files) < 3) stop("Expected 3 .tif files in: ", month_dir)
 
-# Crop and mask rasters to South Kivu
-# Crop = fast bounding box cut; mask = keep only pixels inside border
-avg_sk <- mask(crop(avg_rade9h_00N060W, south_kivu_r), south_kivu_r)
-cf_sk  <- mask(crop(cf_cvg_00N060W,     south_kivu_r), south_kivu_r)
+  avg_file <- tif_files[grepl("avg_rade9h\\.tif$", tif_files)]
+  cf_file  <- tif_files[grepl("cf_cvg\\.tif$", tif_files)]
+  cvg_file <- tif_files[grepl("(?<!cf_)cvg\\.tif$", tif_files, perl = TRUE)]
 
-# Apply cloud-free threshold
-min_cf <- 5
-avg_sk_masked <- ifel(cf_sk >= min_cf, avg_sk, NA_real_)
+  if (any(sapply(list(avg_file, cf_file, cvg_file), length) != 1)) {
+    stop("Could not uniquely identify avg_rade9h / cf_cvg / cvg in: ", month_dir)
+  }
 
-# Compute share of valid (non-NA) pixels
-# Restrict calculation strictly to inside the province polygon
-in_province   <- mask(cf_sk, south_kivu_r)
-total_inside  <- global(!is.na(in_province), "sum", na.rm = TRUE)[1,1]
-valid_inside  <- global(!is.na(avg_sk_masked), "sum", na.rm = TRUE)[1,1]
-pct_valid_inside <- 100 * valid_inside / total_inside
+  list(
+    avg = rast(avg_file),
+    cf  = rast(cf_file),
+    cvg = rast(cvg_file)
+  )
+}
 
-cat(sprintf("South Kivu (inside borders only): %.2f%% valid pixels\n",
-            pct_valid_inside))
+# Core function: crop/mask, apply thresholds, compute % valid
+process_one_month <- function(m) {
+  month_dir <- file.path(base_dir, m)
+  r <- read_month_rasters(month_dir)
 
-# Diagnostics: NA mask map
-plot(is.na(avg_sk_masked),
-     main = "South Kivu – NA pixels (white = missing, black = valid)")
+  # Align CRS of polygon to the rasters (use avg as reference)
+  south_kivu_r <- project(south_kivu, crs(r$avg))
 
-# Visualization: radiance map
-plot(avg_sk_masked,
-     col   = hcl.colors(100, "Inferno", rev = TRUE),
-     NAcol = "transparent",
-     main  = paste0("South Kivu – Night-time Light Radiance (min_cf ≥ ",
-                    min_cf, ")"))
-plot(south_kivu_r, add = TRUE, border = "white", lwd = 1.2)
+  # Crop and mask to South Kivu
+  avg_sk <- mask(crop(r$avg, south_kivu_r), south_kivu_r)
+  cf_sk  <- mask(crop(r$cf,  south_kivu_r), south_kivu_r)
+
+  # Total pixels inside polygon (based on cf layer footprint)
+  in_province  <- mask(cf_sk, south_kivu_r)
+  total_inside <- global(!is.na(in_province), "sum", na.rm = TRUE)[1,1]
+
+  # For each threshold, compute % valid (= non-NA after mask)
+  do.call(rbind, lapply(thresholds, function(min_cf) {
+    avg_sk_masked <- ifel(cf_sk >= min_cf, avg_sk, NA_real_)
+    valid_inside  <- global(!is.na(avg_sk_masked), "sum", na.rm = TRUE)[1,1]
+    pct_valid     <- 100 * valid_inside / total_inside
+
+    data.frame(
+      month = m,
+      threshold_nights = min_cf,
+      total_pixels = as.numeric(total_inside),
+      valid_pixels = as.numeric(valid_inside),
+      pct_valid = as.numeric(pct_valid),
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+# Run over all months, bind results
+results <- bind_rows(lapply(months_list, function(m) {
+  tryCatch(process_one_month(m),
+           error = function(e) {
+             warning(sprintf("Skipping %s due to error: %s", m, e$message))
+             NULL
+           })
+}))
+
+# View the table
+results %>% arrange(month, threshold_nights)
 ```
 
-## Goma
+## Plotting
 
 ```{r}
 
-# Subset the Goma territory / city
-# Check naming with: unique(gadm_cod2$NAME_2)
-goma <- gadm_cod2[gadm_cod2$NAME_2 %in% c("Goma", "Ville de Goma"), ]
+plot_df <- results %>%
+  filter(threshold_nights %in% c(1, 5),
+         month %in% months_list) %>%
+  mutate(
+    month = factor(month, levels = months_list)  # enforce order
+  ) %>%
+  arrange(month, threshold_nights)
 
-# Align CRS with VIIRS raster (ensures same coordinate system)
-goma_r <- project(goma, crs(avg_rade9h_00N060W))
+ggplot(plot_df, aes(x = month, y = pct_valid, group = factor(threshold_nights),
+                    linetype = factor(threshold_nights), shape = factor(threshold_nights))) +
+  geom_line() +
+  geom_point(size = 2) +
+  labs(
+    x = NULL, y = "% valid pixels inside South Kivu",
+    linetype = "Threshold (nights)", shape = "Threshold (nights)",
+    title = "Cloud-free valid pixels over time (thresholds 1 & 5)"
+  ) +
+  scale_y_continuous(labels = function(x) paste0(x, "%"), limits = c(0, 100)) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-# Crop and mask radiance + coverage to Goma
-# Crop = cut by bounding box (faster)
-# Mask = keep only pixels inside the territory boundary
-avg_goma <- mask(crop(avg_rade9h_00N060W, goma_r), goma_r)
-cf_goma  <- mask(crop(cf_cvg_00N060W,     goma_r), goma_r)
+```
 
-# Apply cloud-free threshold
-min_cf <- 5
-avg_goma_masked <- ifel(cf_goma >= min_cf, avg_goma, NA_real_)
+## Plotting Missingness Distribution
 
-# Compute % of valid (non-NA) pixels inside Goma polygon
-in_goma      <- mask(cf_goma, goma_r)
-total_inside <- global(!is.na(in_goma), "sum", na.rm = TRUE)[1,1]
-valid_inside <- global(!is.na(avg_goma_masked), "sum", na.rm = TRUE)[1,1]
-pct_valid_inside <- 100 * valid_inside / total_inside
+```{r}
+# --- Persistence of valid pixels (threshold = 1) across months ---
 
-cat(sprintf("Goma (inside borders only): %.2f%% valid pixels\n", pct_valid_inside))
+threshold_one <- 1
 
-# Diagnostic: NA-pixel map
-plot(is.na(avg_goma_masked),
-     main = "Goma – NA pixels (white = missing, black = valid)")
+# Helper: build valid/invalid mask for one month on South Kivu
+valid_mask_one_month <- function(m, ref = NULL) {
+  month_dir <- file.path(base_dir, m)
+  r <- read_month_rasters(month_dir)
 
-# Visualization: Radiance map
-plot(avg_goma_masked,
-     col   = hcl.colors(100, "Inferno", rev = TRUE),
-     NAcol = "transparent",
-     main  = paste0("Goma – Night-time Light Radiance (min_cf ≥ ", min_cf, ")"))
-plot(goma_r, add = TRUE, border = "white", lwd = 1.5)
+  # Align CRS of polygon to the rasters (use avg as reference)
+  south_kivu_r <- project(south_kivu, crs(r$avg))
 
-# Optional: export processed raster
-writeRaster(avg_goma_masked,
-            paste0("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/jan2025/processed/",
-                   "avg_goma_masked_cf", min_cf, ".tif"),
-            overwrite = TRUE, gdal = c("COMPRESS=LZW"))
+  # Crop & mask to province
+  cf_sk  <- mask(crop(r$cf, south_kivu_r), south_kivu_r)
+
+  # Binary mask inside province: 1 = valid (>= 1 cloud-free night), 0 = missing; NA outside province
+  vm <- ifel(cf_sk >= threshold_one, 1, 0)
+
+  # Align to reference grid if provided
+  if (!is.null(ref)) {
+    vm <- resample(vm, ref, method = "near")
+  }
+
+  return(vm)
+}
+
+# Build stack of valid/invalid masks across months (skip months that error)
+valid_masks <- list()
+ref_grid <- NULL
+
+for (m in months_list) {
+  cat("Processing mask for:", m, "...\n")
+  vm <- tryCatch(valid_mask_one_month(m, ref = ref_grid),
+                 error = function(e) { message("  Skipping ", m, ": ", e$message); NULL })
+  if (is.null(vm)) next
+
+  # Set the first successful month as reference grid
+  if (is.null(ref_grid)) {
+    ref_grid <- vm
+  }
+
+  # If we set ref_grid only now, ensure current vm matches it
+  if (!compareGeom(vm, ref_grid, stopOnError = FALSE)) {
+    vm <- resample(vm, ref_grid, method = "near")
+  }
+
+  names(vm) <- m
+  valid_masks[[m]] <- vm
+}
+
+# If nothing loaded, stop here
+stopifnot(length(valid_masks) > 0)
+
+# Stack (SpatRaster) of 0/1 masks
+vm_stack <- rast(valid_masks)
+
+# Count of months with valid pixels (cf >= 1)
+valid_count <- sum(vm_stack, na.rm = TRUE)
+
+# Plot counts (number of months)
+plot(valid_count,
+     main = sprintf("Months with ≥1 cloud-free night (South Kivu)\n(%d months max)", nlyr(vm_stack)))
+
+```
+
+## Understanding Missingness Distribution
+
+```{r}
+library(terra)
+
+# 1) Load lakes
+lake_vec <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/env/ne_10m_lakes/ne_10m_lakes.shp")
+
+# 2) Try direct name match (most cases this works)
+lake_kivu <- lake_vec[tolower(lake_vec$name) %in% c("lake kivu","kivu"), ]
+
+# 3) If that returned 0 features, pick by spatial overlap + name pattern
+if (nrow(lake_kivu) == 0) {
+  cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
+  # search across all 'name*' columns for 'kivu'
+  name_cols <- grep("^name", names(cand), value = TRUE)
+  hits <- Reduce(`|`, lapply(name_cols, function(col) grepl("kivu", tolower(cand[[col]]), fixed = TRUE)))
+  lake_kivu <- cand[hits, ]
+}
+
+# 4) As an absolute fallback, pick the largest lake intersecting SK
+if (nrow(lake_kivu) == 0) {
+  cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
+  lake_kivu <- cand[which.max(expanse(cand)), ]
+}
+
+stopifnot(nrow(lake_kivu) > 0)
+
+# 5) Project geometries to match your raster CRS (use valid_count’s CRS)
+south_kivu_r <- project(south_kivu, crs(valid_count))
+lake_kivu_r  <- project(lake_kivu,  crs(valid_count))
+
+# 6) (Optional) crop lake to SK bbox to speed up distance calc
+lake_kivu_r <- crop(lake_kivu_r, south_kivu_r)
+
+# 7) Distance raster (meters when CRS is lon/lat)
+dist_lake <- distance(valid_count, lake_kivu_r)
+
+# 8) Mask to SK
+dist_lake <- mask(dist_lake, south_kivu_r)
+
+# 9) Quick check/plot
+hasValues(dist_lake)  # should be TRUE
+plot(dist_lake, main = "Distance to Lake Kivu (m)")
+plot(lake_kivu_r, add = TRUE, border = "blue")
+plot(south_kivu_r, add = TRUE, border = "red")
+
+
 ```
