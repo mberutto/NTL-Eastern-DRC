@@ -150,10 +150,11 @@ results_sk <- dplyr::bind_rows(lapply(months_list, function(m) {
 }))
 ```
 
-### Plotting Valid Pixels for Sud-Kivu)
+### Plotting Valid Pixels for South Kivu
 
 ```{r}
 
+# Prepare data for plotting
 plot_df <- results %>%
   filter(threshold_nights %in% c(1, 5),
          month %in% months_list) %>%
@@ -162,6 +163,7 @@ plot_df <- results %>%
   ) %>%
   arrange(month, threshold_nights)
 
+# Create a line plot
 ggplot(plot_df, aes(x = month, y = pct_valid, group = factor(threshold_nights),
                     linetype = factor(threshold_nights), shape = factor(threshold_nights))) +
   geom_line() +
@@ -239,7 +241,7 @@ vm_stack <- rast(valid_masks)
 # Count of months with valid pixels (cf >= 1)
 valid_count <- sum(vm_stack, na.rm = TRUE)
 
-# Plot counts (number of months)
+# Plotting counts (number of months)
 plot(valid_count,
      main = sprintf("Months with ≥1 cloud-free night (South Kivu)\n(%d months max)", nlyr(vm_stack)))
 
