@@ -57,56 +57,37 @@ months_list <- c(
   "jul2025","aug2025"
 )
 
-# Loop through folders and load rasters
-for (m in months_list) {
-  
-  # Define folder path
-  month_dir <- file.path(base_dir, m)
-  
-  # List all tif files in this folder
-  tif_files <- list.files(month_dir, pattern = "\\.tif$", full.names = TRUE)
-  
-  # Identify each file type by its suffix
-  avg_file <- tif_files[grepl("avg_rade9h", tif_files)]
-  cf_file  <- tif_files[grepl("cf_cvg", tif_files)]
-  cvg_file <- tif_files[grepl("(?<!cf_)cvg\\.tif$", tif_files, perl = TRUE)]
-  
-  # Read each raster
-  avg_r <- rast(avg_file)
-  cf_r  <- rast(cf_file)
-  cvg_r <- rast(cvg_file)
-  
-  # Dynamically assign names like avg_rade9h_00N060W_jan2024
-  assign(paste0("avg_rade9h_00N060W_", m), avg_r)
-  assign(paste0("cf_cvg_00N060W_", m), cf_r)
-  assign(paste0("cvg_00N060W_", m), cvg_r)
-}
+# Load provinces shp file
+gadm_cod1 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_1.shp")
+
+# Selecting South Kivu
+south_kivu <- gadm_cod1[gadm_cod1$NAME_1 %in% c("Sud-Kivu", "South Kivu"), ]
 ```
 
-## Calculating valid pixels
+## Calculating Valid Pixels
+
+### Creating Helper Functions
 
 ```{r}
-# Setting different thesholds for number of valid nights
-thresholds <- c(1, 3, 5)  
-
-
-# Load province, select South Kivu
-gadm_cod1 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_1.shp")
-south_kivu <- gadm_cod1[gadm_cod1$NAME_1 %in% c("Sud-Kivu", "South Kivu"), ]
-
 # Helper to read the 3 rasters for a month
 read_month_rasters <- function(month_dir) {
+  # Listing .tif files
   tif_files <- list.files(month_dir, pattern = "\\.tif$", full.names = TRUE)
+  
+  # Ensuring three files in teh directory
   if (length(tif_files) < 3) stop("Expected 3 .tif files in: ", month_dir)
 
+  # Identifying files and assigning them to objects
   avg_file <- tif_files[grepl("avg_rade9h\\.tif$", tif_files)]
   cf_file  <- tif_files[grepl("cf_cvg\\.tif$", tif_files)]
   cvg_file <- tif_files[grepl("(?<!cf_)cvg\\.tif$", tif_files, perl = TRUE)]
 
+  # Sanity check
   if (any(sapply(list(avg_file, cf_file, cvg_file), length) != 1)) {
     stop("Could not uniquely identify avg_rade9h / cf_cvg / cvg in: ", month_dir)
   }
 
+  # Returning three rasters
   list(
     avg = rast(avg_file),
     cf  = rast(cf_file),
@@ -114,27 +95,31 @@ read_month_rasters <- function(month_dir) {
   )
 }
 
-# Core function: crop/mask, apply thresholds, compute % valid
-process_one_month <- function(m) {
+# Crop/mask an arbitrary AOI, apply thresholds, compute % valid
+process_one_month_aoi <- function(m, area, thresholds) {
+  # Load month rasters
   month_dir <- file.path(base_dir, m)
   r <- read_month_rasters(month_dir)
 
-  # Align CRS of polygon to the rasters (use avg as reference)
-  south_kivu_r <- project(south_kivu, crs(r$avg))
+  # Normalize AOI to SpatVector
+  if (inherits(area, "sf")) area <- terra::vect(area)
 
-  # Crop and mask to South Kivu
-  avg_sk <- mask(crop(r$avg, south_kivu_r), south_kivu_r)
-  cf_sk  <- mask(crop(r$cf,  south_kivu_r), south_kivu_r)
+  # Reproject AOI to raster CRS
+  area_r <- terra::project(area, terra::crs(r$avg))
 
-  # Total pixels inside polygon (based on cf layer footprint)
-  in_province  <- mask(cf_sk, south_kivu_r)
-  total_inside <- global(!is.na(in_province), "sum", na.rm = TRUE)[1,1]
+  # Crop & mask rasters to AOI
+  avg_aoi <- terra::mask(terra::crop(r$avg, area_r), area_r)
+  cf_aoi  <- terra::mask(terra::crop(r$cf,  area_r), area_r)
+
+  # Denominator: total pixels inside AOI footprint
+  in_aoi       <- terra::mask(cf_aoi, area_r)
+  total_inside <- terra::global(!is.na(in_aoi), fun = sum, na.rm = TRUE)[1,1]
 
   # For each threshold, compute % valid (= non-NA after mask)
-  do.call(rbind, lapply(thresholds, function(min_cf) {
-    avg_sk_masked <- ifel(cf_sk >= min_cf, avg_sk, NA_real_)
-    valid_inside  <- global(!is.na(avg_sk_masked), "sum", na.rm = TRUE)[1,1]
-    pct_valid     <- 100 * valid_inside / total_inside
+  out <- do.call(rbind, lapply(thresholds, function(min_cf) {
+    avg_aoi_masked <- terra::ifel(cf_aoi >= min_cf, avg_aoi, NA_real_)
+    valid_inside   <- terra::global(!is.na(avg_aoi_masked), fun = sum, na.rm = TRUE)[1,1]
+    pct_valid      <- 100 * valid_inside / total_inside
 
     data.frame(
       month = m,
@@ -145,22 +130,27 @@ process_one_month <- function(m) {
       stringsAsFactors = FALSE
     )
   }))
+
+  return(out)
 }
-
-# Run over all months, bind results
-results <- bind_rows(lapply(months_list, function(m) {
-  tryCatch(process_one_month(m),
-           error = function(e) {
-             warning(sprintf("Skipping %s due to error: %s", m, e$message))
-             NULL
-           })
-}))
-
-# View the table
-results %>% arrange(month, threshold_nights)
 ```
 
-## Plotting
+### Calculating for South Kivu
+
+```{r}
+# Run for South Kivu over all months, bind results
+results_sk <- dplyr::bind_rows(lapply(months_list, function(m) {
+  tryCatch(
+    process_one_month_aoi(m, area = south_kivu, thresholds = c(1, 3, 5)),
+    error = function(e) {
+      warning(sprintf("Skipping %s due to error: %s", m, e$message))
+      NULL
+    }
+  )
+}))
+```
+
+### Plotting Valid Pixels for Sud-Kivu)
 
 ```{r}
 
@@ -187,10 +177,10 @@ ggplot(plot_df, aes(x = month, y = pct_valid, group = factor(threshold_nights),
 
 ```
 
-## Plotting Missingness Distribution
+## Plotting Missingness Distribution (Sud-Kivu)
 
 ```{r}
-# --- Persistence of valid pixels (threshold = 1) across months ---
+# Persistence of valid pixels (threshold = 1) across months
 
 threshold_one <- 1
 
@@ -255,52 +245,318 @@ plot(valid_count,
 
 ```
 
-## Understanding Missingness Distribution
+## Seeing SK changes Changes Over Time
+
+### Setting Helper Functions
 
 ```{r}
-library(terra)
 
-# 1) Load lakes
-lake_vec <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/env/ne_10m_lakes/ne_10m_lakes.shp")
+# Find the first month that has both the avg and cf rasters
+# This will act the a valid reference month for the spatial structure of the raster
+get_reference <- function(months, base_dir,
+                         patterns = list(
+                           avg = "avg_rade9h\\.tif$",
+                           cf  = "cf_cvg\\.tif$"
+                         )) {
+  for (m in months) {
+    md <- file.path(base_dir, m)
+    tif_files <- list.files(md, pattern = "\\.tif$", full.names = TRUE)
+    if (length(tif_files) == 0) next
 
-# 2) Try direct name match (most cases this works)
-lake_kivu <- lake_vec[tolower(lake_vec$name) %in% c("lake kivu","kivu"), ]
+    avg_file <- tif_files[grepl(patterns$avg, tif_files)]
+    cf_file  <- tif_files[grepl(patterns$cf,  tif_files)]
 
-# 3) If that returned 0 features, pick by spatial overlap + name pattern
-if (nrow(lake_kivu) == 0) {
-  cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
-  # search across all 'name*' columns for 'kivu'
-  name_cols <- grep("^name", names(cand), value = TRUE)
-  hits <- Reduce(`|`, lapply(name_cols, function(col) grepl("kivu", tolower(cand[[col]]), fixed = TRUE)))
-  lake_kivu <- cand[hits, ]
+    if (length(avg_file) == 1 && length(cf_file) == 1) {
+      return(list(
+        month = m,
+        avg   = terra::rast(avg_file),
+        cf    = terra::rast(cf_file)
+      ))
+    }
+  }
 }
 
-# 4) As an absolute fallback, pick the largest lake intersecting SK
-if (nrow(lake_kivu) == 0) {
-  cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
-  lake_kivu <- cand[which.max(expanse(cand)), ]
+# Function to build small framework object for AOI
+make_ref_context <- function(area, months, base_dir,
+                             dissolve = TRUE,
+                             patterns = list(
+                               avg = "avg_rade9h\\.tif$",
+                               cf  = "cf_cvg\\.tif$"
+                             )) {
+
+  # Get reference rasters from first valid month (obtained with the fuction made above)
+  ref <- get_reference(months, base_dir, patterns)
+
+  # Project the area to the raster’s coordinate system
+  area_ref <- terra::project(area, terra::crs(ref$avg))
+
+  # Crops to fit AOI and masks the cloud-free coverage raster
+  in_province_ref <- terra::mask(terra::crop(ref$cf, area_ref), area_ref)
+  
+  # Counting number of valid pixels within area
+  total_inside_ref <- terra::global(!is.na(in_province_ref), "sum", na.rm = TRUE)[1,1]
+
+  # Sanity check
+  if (is.na(total_inside_ref) || total_inside_ref == 0) {
+    stop("The provided `area` does not overlap the reference raster footprint.")
+  }
+
+  # Define a mini-function to crop and mask any new raster to your area, and resamples it to match the reference grid
+  align_to_ref <- function(x, is_continuous = TRUE) {
+    x2 <- terra::mask(terra::crop(x, area_ref), area_ref)
+    if (!terra::compareGeom(x2, in_province_ref, stopOnError = FALSE)) {
+      method <- if (is_continuous) "bilinear" else "near"
+      x2 <- terra::resample(x2, in_province_ref, method = method)
+    }
+    x2
+  }
+
+  list(
+    area_ref         = area_ref,
+    in_province_ref  = in_province_ref,
+    total_inside_ref = total_inside_ref,
+    align_to_ref     = align_to_ref,
+    ref_month        = ref$month
+  )
+}
+```
+
+### Running Analysis????
+
+```{r}
+ctx_sk <- make_ref_context(south_kivu, months_list, base_dir)
+
+# --- Build a context once for the chosen area (do this BEFORE the calls below) ---
+# ctx_sk <- make_ref_context(south_kivu, months_list, base_dir)
+
+# Versatile monthly metrics for ANY area (uses ref context)
+compute_monthly_metrics <- function(m, ctx, base_dir, min_cf = 1, lit_thresh = 1) {
+  r <- read_month_rasters(file.path(base_dir, m))
+
+  avg_sk <- ctx$align_to_ref(r$avg, is_continuous = TRUE)    # bilinear for radiance
+  cf_sk  <- ctx$align_to_ref(r$cf,  is_continuous = FALSE)   # nearest for counts
+
+  total_inside   <- ctx$total_inside_ref
+  avg_sk_masked  <- terra::ifel(cf_sk >= min_cf, avg_sk, NA_real_)
+
+  mean_lum   <- terra::global(avg_sk_masked, mean,   na.rm = TRUE)[1,1]
+  median_lum <- terra::global(avg_sk_masked, median, na.rm = TRUE)[1,1]
+  sum_lum    <- terra::global(avg_sk_masked, sum,    na.rm = TRUE)[1,1]
+
+  w_num <- terra::global(avg_sk_masked * cf_sk, sum, na.rm = TRUE)[1,1]
+  w_den <- terra::global(cf_sk,                 sum, na.rm = TRUE)[1,1]
+  wmean_lum <- if (is.na(w_den) || w_den == 0) NA_real_ else w_num / w_den
+
+  valid_inside <- terra::global(!is.na(avg_sk_masked), sum, na.rm = TRUE)[1,1]
+  pct_valid    <- 100 * valid_inside / total_inside
+
+  lit_mask  <- terra::ifel(!is.na(avg_sk_masked) & (avg_sk_masked >= lit_thresh), 1, NA_real_)
+  lit_count <- terra::global(lit_mask, sum, na.rm = TRUE)[1,1]
+  share_lit <- 100 * lit_count / valid_inside
+
+  data.frame(
+    month = m, min_cf = min_cf,
+    mean_lum   = as.numeric(mean_lum),
+    median_lum = as.numeric(median_lum),
+    sum_lum    = as.numeric(sum_lum),
+    wmean_lum  = as.numeric(wmean_lum),
+    pct_valid  = as.numeric(pct_valid),
+    share_lit  = as.numeric(share_lit),
+    stringsAsFactors = FALSE
+  )
 }
 
-stopifnot(nrow(lake_kivu) > 0)
+# Valid/invalid mask for ANY area (unused below, but updated for ctx)
+valid_mask_one_month <- function(m, ctx, base_dir, threshold_one = 1) {
+  r <- read_month_rasters(file.path(base_dir, m))
+  cf_sk <- ctx$align_to_ref(r$cf, is_continuous = FALSE)
+  vm <- terra::ifel(cf_sk >= threshold_one, 1, 0)  # 1=valid, 0=invalid (NA outside)
+  names(vm) <- m
+  vm
+}
 
-# 5) Project geometries to match your raster CRS (use valid_count’s CRS)
-south_kivu_r <- project(south_kivu, crs(valid_count))
-lake_kivu_r  <- project(lake_kivu,  crs(valid_count))
+# --- Build monthly time series (South Kivu example) ---------------------
+min_cf_choice    <- 1
+lit_thresh_choice <- 1
 
-# 6) (Optional) crop lake to SK bbox to speed up distance calc
-lake_kivu_r <- crop(lake_kivu_r, south_kivu_r)
+# IMPORTANT: pass ctx and base_dir here
+sk_ts <- dplyr::bind_rows(lapply(months_list, function(m) {
+  tryCatch(
+    compute_monthly_metrics(
+      m,
+      ctx       = ctx_sk,
+      base_dir  = base_dir,
+      min_cf    = min_cf_choice,
+      lit_thresh = lit_thresh_choice
+    ),
+    error = function(e) { message("Skipping ", m, ": ", e$message); NULL }
+  )
+})) %>%
+  dplyr::filter(!is.na(.data$month)) %>%                # robust to name clashes
+  dplyr::mutate(
+    # Convert "jan2024" → Date using base R (no lubridate dependency)
+    m3   = stringr::str_to_title(stringr::str_sub(.data$month, 1, 3)),
+    yr   = stringr::str_sub(.data$month, -4, -1),
+    date = as.Date(sprintf("%s-%02d-01", yr, match(m3, month.abb)))
+  ) %>%
+  dplyr::arrange(.data$date)
 
-# 7) Distance raster (meters when CRS is lon/lat)
-dist_lake <- distance(valid_count, lake_kivu_r)
+# --- Inspect results ----------------------------------------------------
+print(head(sk_ts))
+summary(sk_ts$mean_lum)
 
-# 8) Mask to SK
-dist_lake <- mask(dist_lake, south_kivu_r)
+# --- Plot 1: Mean and weighted mean radiance over time -----------------
+event_date <- as.Date("2025-01-01")
 
-# 9) Quick check/plot
-hasValues(dist_lake)  # should be TRUE
-plot(dist_lake, main = "Distance to Lake Kivu (m)")
-plot(lake_kivu_r, add = TRUE, border = "blue")
-plot(south_kivu_r, add = TRUE, border = "red")
+ggplot(sk_ts, aes(x = date)) +
+  geom_line(aes(y = mean_lum,  color = "Mean (unweighted)"),        linewidth = 0.9) +
+  geom_line(aes(y = wmean_lum, color = "Mean (coverage-weighted)"), linewidth = 0.9) +
+  geom_vline(xintercept = event_date, linetype = 2) +
+  scale_color_manual(values = c("Mean (unweighted)" = "#1f77b4",
+                                "Mean (coverage-weighted)" = "#d62728")) +
+  labs(x = NULL, y = "Radiance (nW/cm²/sr)",
+       color = NULL,
+       title = "South Kivu – Monthly Night-time Light Intensity",
+       subtitle = paste0("Cloud-free threshold ≥ ", min_cf_choice,
+                         " night(s); vertical line = Jan 2025")) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
+# --- Plot 2: Data quality and lit area share ---------------------------
+sk_ts_long <- sk_ts %>%
+  dplyr::select(date, pct_valid, share_lit) %>%
+  tidyr::pivot_longer(-date, names_to = "metric", values_to = "value")
+
+ggplot(sk_ts_long, aes(date, value, color = metric)) +
+  geom_line(linewidth = 0.9) +
+  geom_vline(xintercept = event_date, linetype = 2) +
+  scale_color_manual(values = c("pct_valid" = "#2ca02c", "share_lit" = "#9467bd"),
+                     labels = c("pct_valid" = "% valid pixels",
+                                "share_lit" = "% lit pixels (≥ threshold)")) +
+  labs(x = NULL, y = "Percent",
+       color = NULL,
+       title = "South Kivu – Data Quality and Lit-Area Share") +
+  scale_y_continuous(labels = function(x) paste0(x, "%"), limits = c(0, 100)) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# --- Export results to CSV ---------------------------------------------
+out_csv <- file.path(base_dir, "south_kivu_ntl_timeseries_cf1.csv")
+write.csv(sk_ts, out_csv, row.names = FALSE)
+cat("Saved monthly time series to:", out_csv, "\n")
 
 ```
+
+## Understanding Missingness Distribution (Sud-Kivu)
+
+```{r}
+# library(terra)
+# 
+# # 1) Load lakes
+# lake_vec <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/env/ne_10m_lakes/ne_10m_lakes.shp")
+# 
+# # 2) Try direct name match (most cases this works)
+# lake_kivu <- lake_vec[tolower(lake_vec$name) %in% c("lake kivu","kivu"), ]
+# 
+# # 3) If that returned 0 features, pick by spatial overlap + name pattern
+# if (nrow(lake_kivu) == 0) {
+#   cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
+#   # search across all 'name*' columns for 'kivu'
+#   name_cols <- grep("^name", names(cand), value = TRUE)
+#   hits <- Reduce(`|`, lapply(name_cols, function(col) grepl("kivu", tolower(cand[[col]]), fixed = TRUE)))
+#   lake_kivu <- cand[hits, ]
+# }
+# 
+# # 4) As an absolute fallback, pick the largest lake intersecting SK
+# if (nrow(lake_kivu) == 0) {
+#   cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
+#   lake_kivu <- cand[which.max(expanse(cand)), ]
+# }
+# 
+# stopifnot(nrow(lake_kivu) > 0)
+# 
+# # 5) Project geometries to match your raster CRS (use valid_count’s CRS)
+# south_kivu_r <- project(south_kivu, crs(valid_count))
+# lake_kivu_r  <- project(lake_kivu,  crs(valid_count))
+# 
+# # 6) (Optional) crop lake to SK bbox to speed up distance calc
+# lake_kivu_r <- crop(lake_kivu_r, south_kivu_r)
+# 
+# # 7) Distance raster (meters when CRS is lon/lat)
+# dist_lake <- distance(valid_count, lake_kivu_r)
+# 
+# # 8) Mask to SK
+# dist_lake <- mask(dist_lake, south_kivu_r)
+# 
+# # 9) Quick check/plot
+# hasValues(dist_lake)  # should be TRUE
+# plot(dist_lake, main = "Distance to Lake Kivu (m)")
+# plot(lake_kivu_r, add = TRUE, border = "blue")
+# plot(south_kivu_r, add = TRUE, border = "red")
+```
+
+### Calcualting Valid Pixels (Goma)
+
+```{r}
+# # ---- Goma (Level-2) polygon ----
+# gadm_cod2 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_2.shp")
+# goma <- gadm_cod2[gadm_cod2$NAME_2 %in% c("Goma"), ]
+# 
+# # --- Crop/mask + % valid helper for an arbitrary polygon (e.g., South Kivu or Goma)
+# process_one_month_poly <- function(m, poly, thresholds = c(1,3,5)) {
+#   month_dir <- file.path(base_dir, m)
+#   r <- read_month_rasters(month_dir)
+# 
+#   # Align polygon CRS to raster CRS
+#   poly_r <- project(poly, crs(r$avg))
+# 
+#   # Crop & mask
+#   avg_sk <- mask(crop(r$avg, poly_r), poly_r)
+#   cf_sk  <- mask(crop(r$cf,  poly_r), poly_r)
+# 
+#   # Total pixels strictly inside polygon (footprint of cf layer)
+#   in_poly      <- mask(cf_sk, poly_r)
+#   total_inside <- global(!is.na(in_poly), "sum", na.rm = TRUE)[1,1]
+# 
+#   # Loop thresholds
+#   out <- lapply(thresholds, function(min_cf) {
+#     avg_masked <- ifel(cf_sk >= min_cf, avg_sk, NA_real_)
+#     valid_pix  <- global(!is.na(avg_masked), "sum", na.rm = TRUE)[1,1]
+#     pct_valid  <- 100 * valid_pix / total_inside
+#     data.frame(
+#       month = m,
+#       threshold_nights = min_cf,
+#       total_pixels = as.numeric(total_inside),
+#       valid_pixels = as.numeric(valid_pix),
+#       pct_valid = as.numeric(pct_valid),
+#       stringsAsFactors = FALSE
+#     )
+#   })
+#   do.call(rbind, out)
+# }
+# 
+# # --- Run over all months for an arbitrary polygon
+# process_all_months_poly <- function(months, poly, thresholds = c(1,3,5)) {
+#   dplyr::bind_rows(lapply(months, function(m) {
+#     tryCatch(process_one_month_poly(m, poly, thresholds),
+#              error = function(e) {
+#                warning(sprintf("Skipping %s due to error: %s", m, e$message))
+#                NULL
+#              })
+#   }))
+# }
+# 
+# results_goma <- process_all_months_poly(months_list, goma, thresholds = c(1,3,5))
+# 
+# # Inspect
+# dplyr::arrange(results_goma, month, threshold_nights)
+
+```
+
+## Terminology
+
+AOI = Area of interest
+
+Raster = grid-based data format for representing spaces
+
+CRS = Coordinate Reference System
