@@ -241,7 +241,7 @@ vm_stack <- rast(valid_masks)
 # Count of months with valid pixels (cf >= 1)
 valid_count <- sum(vm_stack, na.rm = TRUE)
 
-# Plotting counts (number of months)
+# Plottingu counts (number of months)
 plot(valid_count,
      main = sprintf("Months with ≥1 cloud-free night (South Kivu)\n(%d months max)", nlyr(vm_stack)))
 
@@ -446,112 +446,6 @@ ggplot(sk_ts_long, aes(date, value, color = metric)) +
 out_csv <- file.path(base_dir, "south_kivu_ntl_timeseries_cf1.csv")
 write.csv(sk_ts, out_csv, row.names = FALSE)
 cat("Saved monthly time series to:", out_csv, "\n")
-
-```
-
-## Understanding Missingness Distribution (Sud-Kivu)
-
-```{r}
-# library(terra)
-# 
-# # 1) Load lakes
-# lake_vec <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/env/ne_10m_lakes/ne_10m_lakes.shp")
-# 
-# # 2) Try direct name match (most cases this works)
-# lake_kivu <- lake_vec[tolower(lake_vec$name) %in% c("lake kivu","kivu"), ]
-# 
-# # 3) If that returned 0 features, pick by spatial overlap + name pattern
-# if (nrow(lake_kivu) == 0) {
-#   cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
-#   # search across all 'name*' columns for 'kivu'
-#   name_cols <- grep("^name", names(cand), value = TRUE)
-#   hits <- Reduce(`|`, lapply(name_cols, function(col) grepl("kivu", tolower(cand[[col]]), fixed = TRUE)))
-#   lake_kivu <- cand[hits, ]
-# }
-# 
-# # 4) As an absolute fallback, pick the largest lake intersecting SK
-# if (nrow(lake_kivu) == 0) {
-#   cand <- lake_vec[intersects(lake_vec, south_kivu, touches = TRUE), ]
-#   lake_kivu <- cand[which.max(expanse(cand)), ]
-# }
-# 
-# stopifnot(nrow(lake_kivu) > 0)
-# 
-# # 5) Project geometries to match your raster CRS (use valid_count’s CRS)
-# south_kivu_r <- project(south_kivu, crs(valid_count))
-# lake_kivu_r  <- project(lake_kivu,  crs(valid_count))
-# 
-# # 6) (Optional) crop lake to SK bbox to speed up distance calc
-# lake_kivu_r <- crop(lake_kivu_r, south_kivu_r)
-# 
-# # 7) Distance raster (meters when CRS is lon/lat)
-# dist_lake <- distance(valid_count, lake_kivu_r)
-# 
-# # 8) Mask to SK
-# dist_lake <- mask(dist_lake, south_kivu_r)
-# 
-# # 9) Quick check/plot
-# hasValues(dist_lake)  # should be TRUE
-# plot(dist_lake, main = "Distance to Lake Kivu (m)")
-# plot(lake_kivu_r, add = TRUE, border = "blue")
-# plot(south_kivu_r, add = TRUE, border = "red")
-```
-
-### Calcualting Valid Pixels (Goma)
-
-```{r}
-# # ---- Goma (Level-2) polygon ----
-# gadm_cod2 <- vect("C:/Users/MBERUTTOFI/OneDrive - United Nations/Desktop/NTL-Eastern-DRC/gadm41_COD_shp/gadm41_COD_2.shp")
-# goma <- gadm_cod2[gadm_cod2$NAME_2 %in% c("Goma"), ]
-# 
-# # --- Crop/mask + % valid helper for an arbitrary polygon (e.g., South Kivu or Goma)
-# process_one_month_poly <- function(m, poly, thresholds = c(1,3,5)) {
-#   month_dir <- file.path(base_dir, m)
-#   r <- read_month_rasters(month_dir)
-# 
-#   # Align polygon CRS to raster CRS
-#   poly_r <- project(poly, crs(r$avg))
-# 
-#   # Crop & mask
-#   avg_sk <- mask(crop(r$avg, poly_r), poly_r)
-#   cf_sk  <- mask(crop(r$cf,  poly_r), poly_r)
-# 
-#   # Total pixels strictly inside polygon (footprint of cf layer)
-#   in_poly      <- mask(cf_sk, poly_r)
-#   total_inside <- global(!is.na(in_poly), "sum", na.rm = TRUE)[1,1]
-# 
-#   # Loop thresholds
-#   out <- lapply(thresholds, function(min_cf) {
-#     avg_masked <- ifel(cf_sk >= min_cf, avg_sk, NA_real_)
-#     valid_pix  <- global(!is.na(avg_masked), "sum", na.rm = TRUE)[1,1]
-#     pct_valid  <- 100 * valid_pix / total_inside
-#     data.frame(
-#       month = m,
-#       threshold_nights = min_cf,
-#       total_pixels = as.numeric(total_inside),
-#       valid_pixels = as.numeric(valid_pix),
-#       pct_valid = as.numeric(pct_valid),
-#       stringsAsFactors = FALSE
-#     )
-#   })
-#   do.call(rbind, out)
-# }
-# 
-# # --- Run over all months for an arbitrary polygon
-# process_all_months_poly <- function(months, poly, thresholds = c(1,3,5)) {
-#   dplyr::bind_rows(lapply(months, function(m) {
-#     tryCatch(process_one_month_poly(m, poly, thresholds),
-#              error = function(e) {
-#                warning(sprintf("Skipping %s due to error: %s", m, e$message))
-#                NULL
-#              })
-#   }))
-# }
-# 
-# results_goma <- process_all_months_poly(months_list, goma, thresholds = c(1,3,5))
-# 
-# # Inspect
-# dplyr::arrange(results_goma, month, threshold_nights)
 
 ```
 
